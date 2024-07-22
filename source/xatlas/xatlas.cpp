@@ -42,8 +42,13 @@ Copyright (c) 2012 Brandon Pelfrey
 #endif
 #include <atomic>
 #include <condition_variable>
+#ifndef XA_MULTITHREADED
+#define XA_MULTITHREADED 1
+#endif
+#if XA_MULTITHREADED
 #include <mutex>
 #include <thread>
+#endif
 #include <assert.h>
 #include <float.h> // FLT_MAX
 #include <limits.h>
@@ -66,10 +71,6 @@ Copyright (c) 2012 Brandon Pelfrey
 #endif
 #if XA_PROFILE
 #include <chrono>
-#endif
-
-#ifndef XA_MULTITHREADED
-#define XA_MULTITHREADED 1
 #endif
 
 #define XA_STR(x) #x
@@ -159,14 +160,49 @@ Copyright (c) 2012 Brandon Pelfrey
 #define XA_FOPEN(_file, _filename, _mode) _file = fopen(_filename, _mode)
 #define XA_SPRINTF(_buffer, _size, _format, ...) sprintf(_buffer, _format, __VA_ARGS__)
 #endif
+#if defined (JS_DEBUG)
+// Declare the function that will be implemented in JavaScript to handle the output
+__attribute__((import_module("env"))) __attribute__((import_name("js_log"))) extern void js_log(const char *str, int len);
+
+// A simple buffer to store the formatted string
+#define BUFFER_SIZE 1024
+char buffer[BUFFER_SIZE];
+#include <stdarg.h>
+// Variadic printf-like function
+static int wasm_printf(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int ret = vsnprintf(buffer, BUFFER_SIZE, format, args);
+    va_end(args);
+
+    // Function to handle the output in WebAssembly
+    js_log(buffer, ret);
+    return ret;
+}
+#endif
 
 namespace xatlas {
 namespace internal {
 
+#if defined(__wasm__)
+constexpr const static ReallocFunc s_realloc = realloc;
+constexpr const static FreeFunc s_free = free;
+#else
 static ReallocFunc s_realloc = realloc;
 static FreeFunc s_free = free;
+#endif
+#if defined (JS_DEBUG)
+constexpr const static PrintFunc s_print = wasm_printf;
+constexpr const static bool s_printVerbose = true;
+#else
+#if defined(__wasm__)
+constexpr const static PrintFunc s_print = NULL;
+constexpr const static bool s_printVerbose = false;
+#else
 static PrintFunc s_print = printf;
-static bool s_printVerbose = false;
+static bool s_printVerbose = true;
+#endif
+#endif
 
 #if XA_PROFILE
 typedef uint64_t Duration;
@@ -8890,12 +8926,18 @@ struct Context
 	internal::Array<internal::UvMeshInstance *> uvMeshInstances;
 	bool uvMeshChartsComputed = false;
 };
-
+#if defined (JS_PROGRESS)
+// Declare the function that will be implemented in JavaScript to handle the output
+__attribute__((import_module("env"))) __attribute__((import_name("js_progress"))) extern bool js_progress(ProgressCategory, int, void *);
+#endif
 Atlas *Create()
 {
 	Context *ctx = XA_NEW(internal::MemTag::Default, Context);
 	memset(&ctx->atlas, 0, sizeof(Atlas));
 	ctx->taskScheduler = XA_NEW(internal::MemTag::Default, internal::TaskScheduler);
+#if defined (JS_PROGRESS)
+	ctx->progressFunc = js_progress;
+#endif
 	return &ctx->atlas;
 }
 
@@ -9893,6 +9935,7 @@ void SetProgressCallback(Atlas *atlas, ProgressFunc progressFunc, void *progress
 	ctx->progressUserData = progressUserData;
 }
 
+#ifndef __wasm__
 void SetAlloc(ReallocFunc reallocFunc, FreeFunc freeFunc)
 {
 	internal::s_realloc = reallocFunc;
@@ -9904,6 +9947,7 @@ void SetPrint(PrintFunc print, bool verbose)
 	internal::s_print = print;
 	internal::s_printVerbose = verbose;
 }
+#endif
 
 const char *StringForEnum(AddMeshError error)
 {
@@ -9993,7 +10037,7 @@ void xatlasSetProgressCallback(xatlasAtlas *atlas, xatlasProgressFunc progressFu
 	*(void **)&pf = (void *)progressFunc;
 	xatlas::SetProgressCallback((xatlas::Atlas *)atlas, pf, progressUserData);
 }
-
+#ifndef __wasm__
 void xatlasSetAlloc(xatlasReallocFunc reallocFunc, xatlasFreeFunc freeFunc)
 {
 	xatlas::SetAlloc((xatlas::ReallocFunc)reallocFunc, (xatlas::FreeFunc)freeFunc);
@@ -10003,7 +10047,7 @@ void xatlasSetPrint(xatlasPrintFunc print, bool verbose)
 {
 	xatlas::SetPrint((xatlas::PrintFunc)print, verbose);
 }
-
+#endif
 const char *xatlasAddMeshErrorString(xatlasAddMeshError error)
 {
 	return xatlas::StringForEnum((xatlas::AddMeshError)error);
